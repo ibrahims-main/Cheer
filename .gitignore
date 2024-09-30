@@ -1,3 +1,11 @@
 .env
 utils/database
 myenv
+cogs/economy/__pycache__
+cogs/moderation/__pycache__
+cogs/fun/__pycache__
+cogs/levels/__pycache__
+cogs/other/__pycache__
+cogs/tickets/__pycache__
+utils/other/__pycache__
+utils/views/__pycache__
