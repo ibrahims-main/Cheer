@@ -2,7 +2,7 @@ import discord
 import sqlite3
 from discord.ext import commands
 from discord import app_commands
-from typing import Coroutine, Optional
+from typing import Optional
 from easy_pil import Editor, load_image_async, Font
 
 level = ["Bleh (5)", "YEAH (15)", "Daddy (25)", "MY MANN (50)"]
