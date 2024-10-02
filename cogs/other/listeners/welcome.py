@@ -30,7 +30,7 @@ class Welcome(commands.Cog):
         await channel.send(f"{member.mention} WELCOME TO :) | Hope you love your stay <3")
         await channel.send(file=file)
 
-        log_channel(
+        await log_channel(
             title="Member Joined",
             description=f"{member.mention} joined the server.",
             color=discord.Color.green(),

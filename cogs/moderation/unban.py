@@ -26,7 +26,7 @@ class Unban(commands.Cog):
                 )
             )
 
-            log_channel(
+            await log_channel(
                 guild=interaction.guild,
                 title=title,
                 description=description,

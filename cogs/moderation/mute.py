@@ -14,9 +14,23 @@ class Mute(commands.Cog):
 
     @app_commands.command(name="mute", description="Mute a Dumbo :)")
     @commands.has_permissions(manage_messages=True)
-    async def mute(self, interaction: discord.Interaction, member: discord.Member, *, time: TimeConverter):
+    async def mute(self, interaction: discord.Interaction, member: discord.Member, *, time: str):
+        # Use the TimeConverter to convert the time argument
+        try:
+            time = await TimeConverter().convert(interaction, time)
+        except commands.BadArgument as e:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="Error!",
+                    description=str(e),
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
+            return
+
         muted_role = discord.utils.get(interaction.guild.roles, name="Muted:)")
-        
+
         # Collect the member's roles (excluding the @everyone role) and store them
         original_roles = [role for role in member.roles if role != interaction.guild.default_role]
         muted_members[member.id] = original_roles

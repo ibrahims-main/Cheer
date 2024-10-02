@@ -10,7 +10,22 @@ class Slowmode(commands.Cog):
 
     @app_commands.command(name="slowmode", description="sets the slowmode for dumb people who talk fast")
     @commands.has_permissions(manage_channels=True)
-    async def slowmode(self, interaction: discord.Interaction, *, time: TimeConverter):
+    async def slowmode(self, interaction: discord.Interaction, *, time: str):
+        # Use the TimeConverter to convert the time argument
+        try:
+            time = await TimeConverter().convert(interaction, time)
+        except commands.BadArgument as e:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="Error!",
+                    description=str(e),
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
+            return
+
+        # Set slowmode delay in the channel
         await interaction.channel.edit(slowmode_delay=int(time))
 
         await interaction.response.send_message(f"✅ Slowmode has been set to {int(time)} seconds.")
@@ -18,7 +33,7 @@ class Slowmode(commands.Cog):
         await log_channel(
             guild=interaction.guild,
             title="Slowmode activated!",
-            description=f"✅ Slowmode has been set to {int(time)} seconds. in channel: {interaction.channel.mention} by {interaction.user.mention}",
+            description=f"✅ Slowmode has been set to {int(time)} seconds in channel: {interaction.channel.mention} by {interaction.user.mention}",
             color=discord.Color.random()
         )
 
