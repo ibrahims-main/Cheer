@@ -9,11 +9,10 @@ class Unban(commands.Cog):
 
     @app_commands.command(name="unban", description="Unban a dumbo.")
     @commands.has_permissions(ban_members=True)
-    async def unban(self, interaction: discord.Interaction, user_id: int, reason: str = "None"):
+    async def unban(self, interaction: discord.Interaction, *, user: discord.User, reason: str = "None"):
         guild = interaction.guild
 
         try:
-            user = await self.bot.fetch_user(user_id)
             await guild.unban(user, reason)
             title = "UNBANNED!"
             description = f"User: {user} has been unbanned by {interaction.user.mention} for Reason: {reason}"
@@ -25,6 +24,10 @@ class Unban(commands.Cog):
                     color=discord.Color.random()
                 )
             )
+
+            modlog_cog = self.bot.get_cog("ModLog")
+            if modlog_cog:
+                modlog_cog.log_action(user.id, "Unban", reason, interaction.user.id)
 
             await log_channel(
                 guild=interaction.guild,

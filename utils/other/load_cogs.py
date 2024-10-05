@@ -40,7 +40,7 @@ async def loadAll(client: Bot):
             print(f"Loaded: {other[:-3]}")
 
     # Listeners
-    for listener in os.listdir("./cogs/other/listeners"):
+    for listener in os.listdir("./cogs/listeners"):
         if listener.endswith(".py"):
             await client.load_extension(f'cogs.other.listeners.{listener[:-3]}')
             print(f"Loaded: {listener[:-3]}")

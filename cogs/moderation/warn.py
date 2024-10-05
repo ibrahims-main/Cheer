@@ -9,47 +9,53 @@ from discord import app_commands
 class Warn(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = sqlite3.connect("utils/database/warns.db")
+        self.db = sqlite3.connect("utils/database/warns.db", detect_types=sqlite3.PARSE_DECLTYPES)
         self.cur = self.db.cursor()
         self.setup_db()
 
     def setup_db(self):
-        self.cur.execute("""CREATE TABLE IF NOT EXISTS warns (
-                        memid INTEGER,
-                        reason TEXT,
-                        mod INTEGER,
-                        time INTEGER,
-                        wid TEXT
-                    )""")
+        """Initializes the database table for warnings."""
+        self.cur.execute("""
+            CREATE TABLE IF NOT EXISTS warns (
+                memid INTEGER,
+                reason TEXT,
+                mod INTEGER,
+                time INTEGER,
+                wid TEXT
+            )
+        """)
         self.db.commit()
 
     def get_wid(self):
+        """Generates a unique warning ID."""
         wid = "#"
         ink = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
 
         while True:
-            # Generate a random 5-character wid
             wid += ''.join(choice(ink) for _ in range(5))
-
-            # Check if the generated wid already exists in the database
             cur = self.cur.execute("SELECT wid FROM warns WHERE wid = ?", (wid,))
             res = cur.fetchone()
-
-            # If the fetched result is None, it means the wid is unique
             if res is None:
                 break
             else:
-                # Reset wid for the next iteration
                 wid = "#"
 
         return wid
 
     @app_commands.command(name="warn", description="Warn a member")
-    @commands.has_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(manage_messages=True)
     async def warn(self, interaction: discord.Interaction, member: discord.Member, *, reason: str):
-        wid = self.get_wid()  # Changed to synchronous
-        await self.cur.execute("INSERT INTO warns VALUES(?,?,?,?,?)", (member.id, reason, interaction.user.id, int(time()), wid,))
-        self.db.commit()
+        """Warns a member and logs it in the database."""
+        try:
+            wid = self.get_wid()
+            self.cur.execute(
+                "INSERT INTO warns (memid, reason, mod, time, wid) VALUES (?, ?, ?, ?, ?)",
+                (member.id, reason, interaction.user.id, int(time()), wid)
+            )
+            self.db.commit()
+        except sqlite3.Error as e:
+            await interaction.response.send_message(f"Error saving the warning: {str(e)}", ephemeral=True)
+            return
 
         description = f"✔ Warned: `{str(member)}` Reason: `{reason}`"
         color = discord.Color.random()
@@ -60,6 +66,10 @@ class Warn(commands.Cog):
                 color=color
             )
         )
+
+        modlog_cog = self.bot.get_cog("ModLog")
+        if modlog_cog:
+            modlog_cog.log_action(member.id, "Warn", reason, interaction.user.id, wid)
 
         try:
             await member.send(
@@ -79,10 +89,15 @@ class Warn(commands.Cog):
         )
 
     @app_commands.command(name="warnings", description="Check a member's warnings")
-    @commands.has_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def warnings(self, interaction: discord.Interaction, member: discord.Member):
-        cur = self.cur.execute("SELECT * FROM warns WHERE memid = ? ORDER BY time DESC", (member.id,))
-        res = cur.fetchall()
+        """Lists all warnings of a specific member."""
+        try:
+            cur = self.cur.execute("SELECT * FROM warns WHERE memid = ? ORDER BY time DESC", (member.id,))
+            res = cur.fetchall()
+        except sqlite3.Error as e:
+            await interaction.response.send_message(f"Database error: {str(e)}", ephemeral=True)
+            return
 
         color = discord.Color.random()
         if not res:
@@ -95,7 +110,7 @@ class Warn(commands.Cog):
             )
 
         embed = discord.Embed(
-            description=f"{member.mention} warnings:", color=discord.Color.red())
+            description=f"{member.mention}'s warnings:", color=discord.Color.red())
         wc = 1
         for i in res:
             embed.add_field(
@@ -107,66 +122,85 @@ class Warn(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="clearwarnings", description="Clear a member's warnings")
-    @commands.has_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def clearwarnings(self, interaction: discord.Interaction, member: discord.Member):
+        """Clears all warnings of a specific member and deletes associated mod logs."""
         try:
-            self.cur.execute("DELETE FROM warns WHERE memid=?", (member.id,))
+            self.cur.execute("DELETE FROM warns WHERE memid = ?", (member.id,))
             self.db.commit()
-            title = "Warnings Cleared"
-            description = f"<:tick:966707201064464395> {str(member)}'s warnings cleared successfully!"
-            color = discord.Color.random()
 
-            await interaction.response.send_message(
-                embed=discord.Embed(
-                    title=title,
-                    description=description,
-                    color=color
-                )
-            )
+            # Get ModLog cog and delete associated mod logs
+            modlog_cog = self.bot.get_cog("ModLog")
+            if modlog_cog:
+                modlog_cog.clear_logs_for_member(member.id, "Warn")
+        except sqlite3.Error as e:
+            await interaction.response.send_message(f"Error clearing warnings: {str(e)}", ephemeral=True)
+            return
 
-            await log_channel(
+        title = "Warnings Cleared"
+        description = f"<:tick:966707201064464395> {str(member)}'s warnings cleared successfully!"
+        color = discord.Color.random()
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
                 title=title,
                 description=description,
-                guild=interaction.guild,
-                color=color,
+                color=color
             )
+        )
 
-        except Exception as e:
-            await interaction.response.send_message("OOPS, an error occurred while clearing warnings.")
+        await log_channel(
+            title=title,
+            description=description,
+            guild=interaction.guild,
+            color=color,
+        )
 
     @app_commands.command(name="delete-warn", description="Delete a member's warning")
-    @commands.has_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def delete_warn(self, interaction: discord.Interaction, warn_id: str):
+        """Deletes a specific warning by its ID and removes the associated mod log."""
         try:
-            self.cur.execute("DELETE FROM warns WHERE wid=?", (warn_id,))
+            cur = self.cur.execute("DELETE FROM warns WHERE wid = ?", (warn_id,))
+            if cur.rowcount == 0:
+                raise ValueError("No warnings found with that ID.")
             self.db.commit()
-            title = "Warning Deleted"
-            description = f"<:tick:966707201064464395> Warning with id `{warn_id}` deleted successfully!"
-            color = discord.Color.random()
 
-            await interaction.response.send_message(
-                embed=discord.Embed(
-                    title=title,
-                    description=description,
-                    color=color
-                )
-            )
-
-            await log_channel(
-                title=title,
-                description=description,
-                guild=interaction.guild,
-                color=color,
-            )
-
-        except Exception as e:
+            # Get ModLog cog and delete associated mod log
+            modlog_cog = self.bot.get_cog("ModLog")
+            if modlog_cog:
+                modlog_cog.delete_log_by_warning_id(warn_id)
+        except (sqlite3.Error, ValueError) as e:
             await interaction.response.send_message(
                 embed=discord.Embed(
                     description=f"No warnings found with id: **{warn_id}**",
-                    color=discord.Color.red())
-                )
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
+            return
+
+        title = "Warning Deleted"
+        description = f"<:tick:966707201064464395> Warning with id `{warn_id}` deleted successfully!"
+        color = discord.Color.random()
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=title,
+                description=description,
+                color=color
+            )
+        )
+
+        await log_channel(
+            title=title,
+            description=description,
+            guild=interaction.guild,
+            color=color,
+        )
 
     async def cog_unload(self):
+        """Closes the database connection when the cog is unloaded."""
         self.db.close()
 
 async def setup(bot: commands.Bot):

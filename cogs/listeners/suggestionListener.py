@@ -25,13 +25,13 @@ class SuggestionCog(commands.Cog):
             if reaction.emoji == "✅":
                 # Approve the suggestion
                 await message.channel.send(embed=discord.Embed(
-                    description=f"Suggestion approved by {user.mention}!"))
+                    description=f"Suggestion by the id {message.id} has been approved by {user.mention}!"))
                 # Optionally notify the author of the suggestion
                 await message.add_reaction("👍")
             elif reaction.emoji == "❌":
                 # Disapprove the suggestion
                 await message.channel.send(embed=discord.Embed(
-                    description=f"Suggestion disapproved by {user.mention}!"
+                    description=f"Suggestion by the id {message.id} has been disapproved by {user.mention}!"
                 ))
                 # Optionally notify the author of the suggestion
                 await message.add_reaction("👎")

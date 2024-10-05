@@ -15,34 +15,42 @@ class Rules(commands.Cog):
         )
 
         embed.add_field(
-            name="Respect everyone",
+            value="",
+            name="* Respect everyone",
             inline=False
         )
         embed.add_field(
-            name="No spam or self-promotion (server invites, advertisements etc) without permission from a staff member. This includes DMing fellow members. Only Bots are allowed with permission of moderator :)",
+            value="",
+            name="* No spam or self-promotion (server invites, advertisements etc) without permission from a staff member. This includes DMing fellow members. Only Bots are allowed with permission of moderator :)",
             inline=False
         )
         embed.add_field(
+            value="",
             name="No age-restricted or obscene content. This includes text, images or links featuring nudity, sex, hard violence or other disturbing graphic content.",
             inline=False
         )
         embed.add_field(
+            value="",
             name="If you see something against the rules or something that makes you feel unsafe, let staff know. We want this server to be a welcoming space!",
             inline=False
         )
         embed.add_field(
+            value="",
             name="Casual swearing is allowed, But No Excessive Vulgarity",
             inline=False
         )
         embed.add_field(
+            value="",
             name="No Harassment or Bullying",
             inline=False
         )
         embed.add_field(
+            value="",
             name="Follow Discord's Terms of Service",
             inline=False
         )
         embed.add_field(
+            value="",
             name="have fun :)",
             inline=False
         )

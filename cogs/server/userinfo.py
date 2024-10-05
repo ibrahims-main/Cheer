@@ -8,8 +8,7 @@ class UserInfo(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="user_info", description="Displays information about a user.")
-    async def user_info(self, interaction: discord.Interaction, member: discord.Member = None):
-        user = member or interaction.user
+    async def user_info(self, interaction: discord.Interaction, member: discord.Member):
 
         roles = [role.mention for role in member.roles[1:]]
         roles = roles if roles else ["None"]

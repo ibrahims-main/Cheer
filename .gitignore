@@ -10,5 +10,8 @@ cogs/other/listeners/__pycache__
 cogs/tickets/__pycache__
 utils/__pycache__
 utils/other/__pycache__
+utils/other/a.py
 utils/views/__pycache__
 cogs/other/a.py
+cogs/other/b.py
+cogs/other/c.py

@@ -76,6 +76,10 @@ class Leveling(commands.Cog):
     async def rank(self, interaction: discord.Interaction, user: Optional[discord.Member]):
         userr = user or interaction.user
 
+        if userr == self.bot:
+            await interaction.response.send_message("Nah man im just here to tell You your level I dont talk much (my level is 9999)")
+            return
+
         self.cur.execute("SELECT * FROM user_levels WHERE user_id = ?", (userr.id,))
         user_data = self.cur.fetchone()
 

@@ -23,6 +23,10 @@ class Ban(commands.Cog):
             )
         )
 
+        modlog_cog = self.bot.get_cog("ModLog")
+        if modlog_cog:
+            modlog_cog.log_action(member.id, "Ban", reason, interaction.user.id)
+
         await log_channel(
             title=title,
             description=description,

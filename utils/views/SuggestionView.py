@@ -6,12 +6,16 @@ class SuggestionModal(Modal):
         super().__init__(title="Submit Suggestion")
 
         self.add_item(TextInput(label="Your Suggestion", style=discord.TextStyle.long))
+        
 
     async def on_submit(self, interaction: discord.Interaction):
         suggestion = self.children[0].value
         embed = discord.Embed(title="User Suggestion", color=discord.Color.blue())
         embed.add_field(name="User", value=interaction.user.mention, inline=False)
         embed.add_field(name="Suggestion", value=suggestion, inline=False)
+        embed.set_footer(
+            text="Suggestion ID: {0}".format(interaction.message.id)
+        )
 
         suggestion_channel = interaction.guild.get_channel(1289977074081071124)
 
