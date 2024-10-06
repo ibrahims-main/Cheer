@@ -78,7 +78,7 @@ class Afk(commands.Cog):
                 res = cur.fetchone()
                 if res:
                     embed = discord.Embed(
-                        description=f"{mention.mention} is AFK: {res[0]} (Last seen: <t:{res[1]}:>)",
+                        description=f"{mention.mention} is AFK: {res[0]} (Last seen: <t:{res[1]}:R>)",
                         color=discord.Color.random()
                     )
                     await message.reply(embed=embed)

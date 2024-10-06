@@ -29,12 +29,17 @@ class Reminder(commands.Cog):
     def create_reminder_id(self) -> str:
         """Generates a unique reminder ID."""
         ink = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
-        res = None
-        while res is None:
+        attempts = 0
+        max_attempts = 100  # Limit attempts to avoid infinite loops
+        while attempts < max_attempts:
             wid = "#" + ''.join(choice(ink) for _ in range(5))
             cur = self.cur.execute("SELECT reminder_id FROM reminder WHERE reminder_id=?", (wid,))
             res = cur.fetchone()
-        return wid
+            if res is None:
+                return wid
+            attempts += 1
+        raise Exception("Could not generate a unique reminder ID after several attempts.")
+
 
     def convert_time(self, times: str) -> int:
         """Converts a time string to seconds using pytimeparse."""

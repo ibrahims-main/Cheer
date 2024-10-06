@@ -21,26 +21,26 @@ async def loadAll(client: Bot):
             await client.load_extension(f'cogs.moderation.{mod[:-3]}')
             print(f"Loaded: {mod[:-3]}")
 
-    # Economy
-    for economy in os.listdir("./cogs/economy"):
-        if economy.endswith(".py"):
-            await client.load_extension(f'cogs.economy.{economy[:-3]}')
-            print(f"Loaded: {economy[:-3]}")
-
     # Fun
     for fun in os.listdir("./cogs/fun"):
         if fun.endswith(".py"):
             await client.load_extension(f'cogs.fun.{fun[:-3]}')
             print(f"Loaded: {fun[:-3]}")
 
-    # Other
-    for other in os.listdir("./cogs/other"):
-        if other.endswith(".py"):
-            await client.load_extension(f'cogs.other.{other[:-3]}')
-            print(f"Loaded: {other[:-3]}")
+    # Server
+    for server in os.listdir("./cogs/server"):
+        if server.endswith(".py"):
+            await client.load_extension(f'cogs.server.{server[:-3]}')
+            print(f"Loaded: {server[:-3]}")
 
     # Listeners
     for listener in os.listdir("./cogs/listeners"):
         if listener.endswith(".py"):
-            await client.load_extension(f'cogs.other.listeners.{listener[:-3]}')
+            await client.load_extension(f'cogs.listeners.{listener[:-3]}')
             print(f"Loaded: {listener[:-3]}")
+
+    # Economy
+    for economy in os.listdir("./cogs/economy"):
+        if economy.endswith(".py"):
+            await client.load_extension(f'cogs.economy.{economy[:-3]}')
+            print(f"Loaded: {economy[:-3]}")

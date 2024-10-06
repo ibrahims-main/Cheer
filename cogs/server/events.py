@@ -9,7 +9,7 @@ class Events(commands.Cog):
         self.db = sqlite3.connect("utils/database/events.db")
         self.cur = self.db.cursor()
         self.events_channel_id = 1292097836258689086
-        self.events_vc_id = 1292098720204324974
+        self.events_vc_id = 1292140504246390854
         self.setup_db()
 
     def setup_db(self):
@@ -41,7 +41,7 @@ class Events(commands.Cog):
                 f"{role.mention}",
                 embed=discord.Embed(
                     title="GAMEEE NIGHTT!",
-                    description=f"**Event:** {title}\n**Description:** {description}\n**Date:** {date}\n**Time:** {time}\n\nJoin THE EVENTS VC quickly!",
+                    description=f"**Event:** {title}\n**Description:** {description}\n**Date:** {date}\n**Time:** {time}\n\DO ``/join_event`` to JOIN",
                     color=discord.Color.green()
                 )
             )
@@ -144,3 +144,6 @@ class Events(commands.Cog):
 
     def cog_unload(self):
         self.db.close()
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Events(bot))
