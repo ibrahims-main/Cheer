@@ -1,26 +1,25 @@
-import discord
 import sqlite3
-import asyncio
+from asyncio import TimeoutError, ensure_future
 from discord.ext import commands
-from discord import app_commands
-from utils.other.economy_errors import AccountNotFound, InsufficientFunds, InvalidAmount, ItemNotFound
-from typing import List, Tuple
+from discord import app_commands, Interaction, Member, Embed, Color, utils, Message, ButtonStyle, ui
+from typing import Optional, List, Tuple
+from utils.other.economy_errs import *
 
 class EconomyDB:
     def __init__(self):
         self.db = sqlite3.connect("utils/database/economy.db")
         self.cur = self.db.cursor()
+        
         self.create_economyDB()
         self.create_loansDB()
-        self.create_shopItemsDB()
         self.create_userAssetsDB()
 
     def create_economyDB(self):
         self.cur.execute("""
             CREATE TABLE IF NOT EXISTS economy (
                 user_id INTEGER PRIMARY KEY,
-                wallet INTEGER,
-                bank INTEGER
+                wallet INTEGER DEFAULT 100,
+                bank INTEGER DEFAULT 0
             )
         """)
         self.db.commit()
@@ -39,16 +38,6 @@ class EconomyDB:
         """)
         self.db.commit()
 
-    def create_shopItemsDB(self):
-        self.cur.execute("""
-            CREATE TABLE IF NOT EXISTS shop_items (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                price INTEGER NOT NULL
-            )
-        """)
-        self.db.commit()
-
     def create_userAssetsDB(self):
         self.cur.execute("""
             CREATE TABLE IF NOT EXISTS user_assets (
@@ -56,18 +45,436 @@ class EconomyDB:
                 item_id INTEGER NOT NULL,
                 quantity INTEGER NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES economy(user_id),
-                FOREIGN KEY (item_id) REFERENCES shop_items(id)
             )
         """)
         self.db.commit()
+    
+    """
+    Loans Checks
+    """
+    
+    def get_active_loan(self, user_id: int):
+        self.cur.execute("SELECT id, amount FROM active_loans WHERE debtor_id = ? AND status = 'pending'", (user_id,))
+        return self.cur.fetchone()
+
+    def repay_loan(self, loan_id: int, amount: int):
+        self.cur.execute("UPDATE active_loans SET amount = amount - ? WHERE id = ?", (amount, loan_id))
+        self.db.commit()
+
+    def mark_loan_repaid(self, loan_id: int):
+        self.cur.execute("UPDATE active_loans SET status = 'repaid' WHERE id = ?", (loan_id,))
+        self.db.commit()
+
+    """
+    Close the Database
+    """
 
     def close(self):
         self.db.close()
 
-class Shop:
+class Economy(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.db = EconomyDB()
         self.items_per_page = 5
+
+    """
+    Check Functions
+    """
+
+    def check_account(self, user_id: int):
+        self.db.cur.execute("SELECT * FROM economy WHERE user_id = ?", (user_id,))
+        return self.db.cur.fetchone()
+    
+    def check_balance(self, balance: int, amount: int) -> bool:
+        return balance >= amount > 0
+
+    """
+    Account Management
+    """
+
+    @app_commands.command(name="createaccount", description="Create your economy account")
+    async def createaccount(self, interaction: Interaction):
+        user_id = interaction.user.id
+        account = self.check_account(user_id)
+
+        if account:
+            return await interaction.response.send_message("You already have an economy account.", ephemeral=True)
+        
+        self.db.cur.execute("INSERT INTO economy (user_id, wallet, bank) VALUES (?, 100, 0)", (user_id,))
+        self.db.db.commit()
+        await interaction.response.send_message(f"{interaction.user.mention}, your account has been set up with a default balance of 100 :) in your wallet!")
+
+    @app_commands.command(name="accountinfo", description="View yours or someone else's balance/info")
+    async def accountinfo(self, interaction: Interaction, user: Optional[Member] = None):
+        user = user or interaction.user
+        user_id = user.id
+
+        account = self.check_account(user_id)
+
+        if account:
+            wallet, bank = account[1], account[2]
+            
+            self.db.cur.execute("SELECT item_id, quantity FROM user_assets WHERE user_id = ?", (user_id,))
+            user_assets = self.db.cur.fetchall()
+
+            asset_details = []
+            for item_id, quantity in user_assets:
+                self.db.cur.execute("SELECT name, price FROM shop_items WHERE id = ?", (item_id,))
+                item_info = self.db.cur.fetchone()
+                if item_info:
+                    item_name, item_price = item_info
+                    asset_details.append(f"{item_name} (x{quantity}): {item_price} :)'s each")
+
+            asset_string = "\n".join(asset_details) if asset_details else "No assets owned."
+
+            embed = Embed(
+                title=f"{user.display_name}'s Economy Account",
+                description=f"**Wallet:** {wallet}\n**Bank:** {bank}\n**Assets:**\n{asset_string}",
+                color=Color.blue()
+            )
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    @app_commands.command(name="deleteaccount", description="Delete your economy account")
+    async def deleteaccount(self, interaction: Interaction):
+        user_id = interaction.user.id
+        account = self.check_account(user_id)
+
+        if account:
+            self.db.cur.execute("DELETE FROM economy WHERE user_id = ?", (user_id,))
+            self.db.db.commit()
+            await interaction.response.send_message(f"{interaction.user.mention}, your account has been deleted.")
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    @app_commands.command(name="resetaccount", description="Reset your account (If moderator: reset someone else's account)")
+    async def resetaccount(self, interaction: Interaction, user: Optional[Member] = None):
+        member = user or interaction.user
+
+        if member != interaction.user:
+            role1 = utils.get(interaction.guild.roles, name="Supreme Mod Overlord")
+            role2 = utils.get(interaction.guild.roles, name="God-Mode Guardian")
+            role3 = utils.get(interaction.guild.roles, name=":)")
+
+            if not any(role in interaction.user.roles for role in [role1, role2, role3]):
+                await interaction.response.send_message(f"You can only reset your data; to reset other data, you must have {role1.mention}, {role2.mention}, or {role3.mention} roles", ephemeral=True)
+                return
+            
+        member_id = member.id
+        account = self.check_account(member_id)
+
+        if account:
+            self.db.cur.execute("UPDATE economy SET wallet = 100, bank = 0 WHERE user_id = ?", (member_id,))
+            self.db.db.commit()
+            await interaction.response.send_message(f"{member.mention}'s account has been reset.")
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    """
+    Balance Checks
+    """
+
+    @app_commands.command(name="wallet", description="Check your wallet balance")
+    async def wallet(self, interaction: Interaction):
+        user_id = interaction.user.id
+        account = self.check_account(user_id)
+
+        if account:
+            wallet = account[1]
+            embed = Embed(title=f"{interaction.user.display_name}'s Wallet Balance", description=f"**Wallet:** {wallet}", color=Color.green())
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    @app_commands.command(name="bank", description="Check your bank balance")
+    async def bank(self, interaction: Interaction):
+        user_id = interaction.user.id
+        account = self.check_account(user_id)
+
+        if account:
+            bank = account[2]
+            embed = Embed(title=f"{interaction.user.display_name}'s Bank Balance", description=f"**Bank:** {bank}", color=Color.purple())
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    @app_commands.command(name="networth", description="View your/users networth")
+    async def networth(self, interaction: Interaction, user: Optional[Member] = None):
+        user = user or interaction.user
+        user_id = user.id
+        account = self.check_account(user_id)
+
+        if account:
+            wallet, bank = account[1], account[2]
+            networth = wallet + bank
+
+            await interaction.response.send_message(
+                embed=Embed(
+                    title=f"{user.display_name}'s Networth",
+                    description=f"{networth} :)",
+                    color=Color.random()
+                )
+            )
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    @app_commands.command(name="richest", description="List the top richest users in the server")
+    async def richest(self, interaction: Interaction):
+        self.db.cur.execute("SELECT user_id, wallet + bank AS total FROM economy ORDER BY total DESC LIMIT 10")
+        top_rich = self.db.cur.fetchall()
+
+        if not top_rich:
+            await interaction.response.send_message("No users found.", ephemeral=True)
+            return
+
+        embed = Embed(title="Top Richest Users", color=Color.gold())
+        for index, (user_id, total) in enumerate(top_rich, start=1):
+            user = await self.bot.fetch_user(user_id)
+            embed.add_field(name=f"{index}. {user}", value=f"Total: {total} :)'s", inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="poorest", description="List the top poorest users in the server")
+    async def poorest(self, interaction: Interaction):
+        self.db.cur.execute("SELECT user_id, wallet + bank AS total FROM economy ORDER BY total ASC LIMIT 10")
+        top_poor = self.db.cur.fetchall()
+
+        if not top_poor:
+            await interaction.response.send_message("No users found.", ephemeral=True)
+            return
+
+        embed = Embed(title="Top Poorest Users", color=Color.red())
+        for index, (user_id, total) in enumerate(top_poor, start=1):
+            user = await self.bot.fetch_user(user_id)
+            embed.add_field(name=f"{index}. {user}", value=f"Total: {total} :)'s", inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    """
+    Transactions
+    """
+
+    @app_commands.command(name="deposit", description="Deposit :) from your wallet to your bank")
+    async def deposit(self, interaction: Interaction, amount: int):
+        user_id = interaction.user.id
+        account = self.check_account(user_id)
+
+        if account:
+            self.db.cur.execute("SELECT wallet FROM economy WHERE user_id = ?", (user_id,))
+            wallet_balance = self.db.cur.fetchone()[0]
+
+            if self.check_balance(wallet_balance, amount):
+                self.db.cur.execute(
+                    "UPDATE economy SET wallet = wallet - ?, bank = bank + ? WHERE user_id = ?",
+                    (amount, amount, user_id)
+                )
+                self.db.db.commit()
+                await interaction.response.send_message(f"Deposited {amount} into your bank.")
+            else:
+                await interaction.response.send_message("Sorry man but you dont have the balance for that try another amount lesser than the balance in your wallet or try depositing money from your bank to your wallet", ephemeral=True)
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    @app_commands.command(name="withdraw", description="Withdraw :) from your bank to your wallet")
+    async def withdraw(self, interaction: Interaction, amount: int):
+        user_id = interaction.user.id
+        account = self.check_account(user_id)
+
+        if account:
+            self.db.cur.execute("SELECT bank FROM economy WHERE user_id = ?", (user_id,))
+            bank_balance = self.db.cur.fetchone()[0]
+
+            if self.check_balance(bank_balance, amount):
+                self.db.cur.execute(
+                    "UPDATE economy SET wallet = wallet + ?, bank = bank - ? WHERE user_id = ?",
+                    (amount, amount, user_id)
+                )
+                self.db.db.commit()
+                await interaction.response.send_message(f"Withdrew {amount} from your bank.")
+            else:
+                await interaction.response.send_message("Sorry man but you dont have the balance for that try another amount lesser than the balance in your wallet or try depositing money from your bank to your wallet", ephemeral=True)
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    @app_commands.command(name="transfer", description="Transfer :) into another user's bank")
+    async def transfer(self, interaction: Interaction, user: Member, amount: int):
+        user_id = interaction.user.id
+        target_user_id = user.id
+        user_account = self.check_account(user_id)
+        target_user_account = self.check_account(target_user_id)
+
+        if user_account and target_user_account:
+            self.db.cur.execute("SELECT wallet FROM economy WHERE user_id = ?", (user_id,))
+            wallet_balance = self.db.cur.fetchone()[0]
+            
+            if self.check_balance(wallet_balance, amount):
+                self.db.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, user_id,))
+                self.db.cur.execute("UPDATE economy SET bank = bank + ? WHERE user_id = ?", (amount, target_user_id))
+                self.db.db.commit()
+                await interaction.response.send_message(f"Transferred {amount} :) to {user.display_name}'s bank.")
+            else:
+                await interaction.response.send_message("Sorry man but you dont have the balance for that try another amount lesser than the balance in your wallet or try depositing money from your bank to your wallet", ephemeral=True)
+        elif not user_account:
+            await interaction.response.send_message("Your account not found, please create one using `/createaccount`", ephemeral=True)
+        elif not target_user_account:
+            await interaction.response.send_message(f"{user.display_name}'s account not found.", ephemeral=True)
+
+    @app_commands.command(name="gift", description="Gift money to another user")
+    async def gift(self, interaction: Interaction, user: Member, amount: int):
+        user_id = interaction.user.id
+        target_user_id = user.id
+        user_account = self.check_account(user_id)
+        target_user_account = self.check_account(target_user_id)
+
+        if user_account and target_user_account:
+            self.db.cur.execute("SELECT wallet FROM economy WHERE user_id = ?", (user_id,))
+            wallet_balance = self.db.cur.fetchone()[0]
+
+            if self.check_balance(wallet_balance, amount):
+                self.db.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, user_id,))
+                self.db.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, target_user_id,))
+                self.db.db.commit()
+                await interaction.response.send_message(f"Gifted {amount} :) to {user.display_name}.", ephemeral=True)
+                await user.send(f"{interaction.user.display_name} gifted you {amount} :) from their bank.")
+            else:
+                await interaction.response.send_message("Sorry man but you dont have the balance for that try another amount lesser than the balance in your wallet or try depositing money from your bank to your wallet", ephemeral=True)
+        elif not user_account:
+            await interaction.response.send_message("Your account not found, please create one using `/createaccount`", ephemeral=True)
+        elif not target_user_account:
+            await interaction.response.send_message(f"{user.display_name}'s account not found.", ephemeral=True)
+
+    @app_commands.command(name="giveaway", description="Start a giveaway for a specified amount")
+    async def giveaway(self, interaction: Interaction, amount: int):
+        if amount <= 0:
+            return await interaction.response.send_message(f"The giveaway amount must be greater than zero.", ephemeral=True)
+
+        user_id = interaction.user.id
+        account = self.check_account(user_id)
+        self.db.cur.execute("SELECT wallet FROM economy WHERE user_id = ?", (user_id,))
+        wallet_balance = self.db.cur.fetchone()[0]
+
+        if account:
+            if self.check_balance(wallet_balance, amount):
+                embed = Embed(
+                    title="Giveaway! 🎉🎉",
+                    description=f"React with 🎉 to enter for a chance to win {amount} :)'s!",
+                    color=Color.gold()
+                )
+
+                await interaction.response.send_message("Giveaway started!", ephemeral=True)
+                message: Message = await interaction.followup.send(embed=embed, wait=True)
+                await message.add_reaction("🎉")
+
+                def check(reaction, user):
+                    return reaction.emoji == "🎉" and not user.bot
+
+                try:
+                    reaction, user = await self.bot.wait_for("reaction_add", timeout=30.0, check=check)
+
+                    self.db.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, user.id,))
+                    self.db.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, user_id,))
+                    self.db.db.commit()
+
+                    await interaction.followup.send(f"Congratulations {user.mention}! You've won {amount} :)'s!")
+                except TimeoutError:
+                    await interaction.followup.send("Giveaway timed out! No winners this time.")
+            else:
+                await interaction.response.send_message("Sorry, but you don't have enough balance to start a giveaway.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+    @app_commands.command(name="loan", description="Request a loan from a user")
+    async def loan(self, interaction: Interaction, user: Member, amount: int):
+        debtor_id = interaction.user.id
+        lender_id = user.id
+        debtor_account = self.check_account(debtor_id)
+        lender_account = self.check_account(lender_id)
+
+        if not lender_account:
+            await interaction.response.send_message(f"{user.mention}'s account not found. They need to create one using `/createaccount`", ephemeral=True)
+            return
+
+        if not debtor_account:
+            await interaction.response.send_message(f"{interaction.user.mention}'s account not found. Please create one using `/createaccount`", ephemeral=True)
+            return
+
+        self.db.cur.execute("SELECT * FROM active_loans WHERE debtor_id = ? AND lender_id = ? AND status = 'pending'", (debtor_id, lender_id))
+        existing_loan = self.db.cur.fetchone()
+
+        if existing_loan:
+            await interaction.response.send_message(f"{interaction.user.mention}, you already have a pending loan request from {user.mention}.", ephemeral=True)
+            return
+
+        self.db.cur.execute("SELECT wallet FROM economy WHERE user_id = ?", (lender_id,))
+        lender_balance = self.db.cur.fetchone()[0]
+
+        if not self.check_balance(lender_balance, amount):
+            await interaction.response.send_message(f"Sorry, but {user.mention} doesn't have enough balance to lend {amount} :)'s.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(f"{user.mention}, {interaction.user.mention} is requesting a loan of {amount} :)'s. Do you accept? (yes/no)")
+
+        def check(message: Message):
+            return message.author == user and message.channel == interaction.channel
+
+        try:
+            response = await self.bot.wait_for("message", timeout=30.0, check=check)
+            if response.content.lower() == "yes":
+                self.db.cur.execute("""
+                    INSERT INTO active_loans (debtor_id, lender_id, amount, status)
+                    VALUES (?, ?, ?, 'pending')
+                """, (debtor_id, lender_id, amount))
+
+                self.db.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, debtor_id))
+                self.db.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, lender_id))
+                self.db.db.commit()
+
+                await interaction.followup.send(f"{user.mention}, you've successfully lent {amount} :)'s to {interaction.user.mention}.")
+            else:
+                await interaction.followup.send(f"{user.mention}, you've declined {interaction.user.mention}'s loan request.")
+        except TimeoutError:
+            await interaction.followup.send("Loan request timed out.")
+
+    @app_commands.command(name="repay", description="Repay your active loan to a specific user")
+    async def repay(self, interaction: Interaction, amount: int, recipient: Member):
+        user_id = interaction.user.id
+
+        account = await self.check_account(user_id)
+        if not account:
+            return await interaction.response.send_message("Account not found, please create one using `/createaccount`", ephemeral=True)
+
+        self.db.cur.execute("SELECT wallet FROM economy WHERE user_id = ?", (user_id,))
+        wallet_balance = self.db.cur.fetchone()[0]
+        
+        loan = self.db.get_active_loan(user_id)
+        if not loan:
+            raise NoActiveLoan()
+
+        loan_id, loan_amount = loan
+
+        if not await self.check_balance(user_id, amount):
+            raise InsufficientFunds(wallet_balance, amount)
+
+        if amount > loan_amount:
+            return await interaction.response.send_message(f"You are trying to repay more than the outstanding loan balance of {loan_amount}.", ephemeral=True)
+
+        try:
+            self.db.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, user_id))
+            self.db.repay_loan(loan_id, amount)
+
+            if amount == loan_amount:
+                self.db.mark_loan_repaid(loan_id)
+
+            self.db.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, recipient.id))
+
+            await interaction.response.send_message(f"Successfully repaid {amount} from your loan to {recipient.name}. Remaining loan balance: {loan_amount - amount}.")
+        
+        except Exception as e:
+            await interaction.response.send_message(f"An error occurred while processing your repayment: {str(e)}", ephemeral=True)
+
+    """
+    Shop
+    """
 
     def shop_items(self) -> List[Tuple[str, int]]:
         return [
@@ -173,567 +580,207 @@ class Shop:
             ("Puzzle Toy", 20),
             ("Building Blocks", 40),
         ]
-
-    async def show_shop(self, interaction: discord.Interaction, page: int = 0):
-        """Handles pagination of the shop items."""
+    
+    async def show_shop(self, interaction: Interaction, page: int = 0):
         items = self.shop_items()
         start = page * self.items_per_page
         end = start + self.items_per_page
         shop_page = items[start:end]
-        
-        embed = discord.Embed(title="Shop Items", color=discord.Color.green())
+
+        embed = Embed(title="Shop Items", description="", color=Color.random())
         for item in shop_page:
             embed.add_field(name=item[0], value=f"Price: {item[1]} :)'s", inline=False)
-
-        view = discord.ui.View()
-        if page > 0:
-            prev_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.primary)
-            prev_button.callback = lambda i: asyncio.ensure_future(self.show_shop(i, page - 1))
-            view.add_item(prev_button)
         
-        if end < len(items):
-            next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.primary)
-            next_button.callback = lambda i: asyncio.ensure_future(self.show_shop(i, page + 1))
-            view.add_item(next_button)
+        view = ui.View()
 
+        if page > 0:
+            prev_button = ui.Button(label="Previous", style=ButtonStyle.primary)
+            prev_button.callback = lambda _: self.show_shop(interaction, page - 1)
+            view.add_item(prev_button)
+
+        if end < len(items):
+            next_button = ui.Button(label="Next", style=ButtonStyle.primary)
+            next_button.callback = lambda _: self.show_shop(interaction, page + 1)
+            view.add_item(next_button)
+        
         await interaction.response.send_message(embed=embed, view=view)
 
-class Economy(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self.economy = EconomyDB()
-        self.shop = Shop()
-
-    """
-    Account Management
-    """
-
-    async def check_account(self, user_id: int, interaction: discord.Interaction) -> bool:
-        self.economy.cur.execute("SELECT * FROM economy WHERE user_id = ?", (user_id,))
-        result = self.economy.cur.fetchone()
-
-        if result:
-            return True
-        else:
-            await interaction.response.send_message(
-                f"{interaction.user.mention}, you do not have an account! Please create one by using the `/setup` command.", 
-                ephemeral=True
-            )
-            return False
-
-    @app_commands.command(name="setup", description="Setup your account")
-    async def setup(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-
-        try:
-            if await self.check_account(user_id):
-                raise AccountNotFound()
-
-            self.economy.cur.execute("INSERT INTO economy (user_id, wallet, bank) VALUES (?, 100, 0)", (user_id,))
-            self.economy.db.commit()
-            await interaction.response.send_message(
-                f"{interaction.user.mention}, your account has been set up with a default balance of 100 in your wallet!"
-            )
-        except AccountNotFound as e:
-            await interaction.response.send_message(e.message, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message("An error occurred while setting up your account. Please try again later.", ephemeral=True)
-
-    @app_commands.command(name="deleteaccount", description="Delete your economy account")
-    async def deleteaccount(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-
-        try:
-            if not await self.check_account(user_id):
-                raise AccountNotFound()
-
-            self.economy.cur.execute("DELETE FROM economy WHERE user_id=?", (user_id,))
-            self.economy.db.commit()
-            await interaction.response.send_message(f"{interaction.user.mention}, your account has been deleted.")
-        except AccountNotFound as e:
-            await interaction.response.send_message(e.message, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message("An error occurred while deleting your account. Please try again later.", ephemeral=True)
-
-    @app_commands.command(name="resetaccount", description="Reset your economy account")
-    async def resetaccount(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-
-        try:
-            if not await self.check_account(user_id):
-                raise AccountNotFound()
-
-            self.economy.cur.execute("UPDATE economy SET wallet=100, bank=0 WHERE user_id=?", (user_id,))
-            self.economy.db.commit()
-            await interaction.response.send_message(
-                f"{interaction.user.mention}, your account has been reset to a default balance of 100 in your wallet."
-            )
-        except AccountNotFound as e:
-            await interaction.response.send_message(e.message, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message("An error occurred while resetting your account. Please try again later.", ephemeral=True)
-
-    @app_commands.command(name="checkaccount", description="Check your account")
-    async def checkaccount(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-
-        try:
-            if not await self.check_account(user_id):
-                raise AccountNotFound()
-
-            await interaction.response.send_message("You have an economy account!")
-        except AccountNotFound as e:
-            await interaction.response.send_message(e.message, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message("An error occurred while checking your account. Please try again later.", ephemeral=True)
-
-    @app_commands.command(name="accountinfo", description="Displays your or another user's account information")
-    async def accountinfo(self, interaction: discord.Interaction, user: discord.Member = None):
-        user = user or interaction.user
-        user_id = user.id
-
-        try:
-            self.economy.cur.execute("SELECT wallet, bank FROM economy WHERE user_id=?", (user_id,))
-            account = self.economy.cur.fetchone()
-
-            if account:
-                wallet, bank = account
-                embed = discord.Embed(
-                    title=f"{user}'s Account Info",
-                    description=f"Wallet Balance: {wallet} \nBank Balance: {bank}",
-                    color=discord.Color.blue()
-                )
-                await interaction.response.send_message(embed=embed)
-            else:
-                raise AccountNotFound()
-        except AccountNotFound as e:
-            await interaction.response.send_message(e.message, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message("An error occurred while retrieving account information. Please try again later.", ephemeral=True)
-
-    """
-    Balance Checks
-    """
-
-    @app_commands.command(name="wallet", description="Shows you your wallet balance")
-    async def wallet(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-
-        try:
-            if not await self.check_account(user_id):
-                raise AccountNotFound()
-
-            self.economy.cur.execute("SELECT wallet FROM economy WHERE user_id=?", (user_id,))
-            wallet = self.economy.cur.fetchone()[0]
-
-            embed = discord.Embed(
-                title="Wallet Balance",
-                description=f"Your wallet balance is: {wallet}",
-                color=discord.Color.blue()
-            )
-            await interaction.response.send_message(embed=embed)
-        except AccountNotFound as e:
-            await interaction.response.send_message(e.message, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message("An error occurred while retrieving your wallet balance. Please try again later.", ephemeral=True)
-
-    @app_commands.command(name="bank", description="Shows you your bank balance")
-    async def bank(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-
-        if not await self.check_account(user_id):
-            raise AccountNotFound()
-
-        self.economy.cur.execute("SELECT bank FROM economy WHERE user_id=?", (user_id,))
-        result = self.economy.cur.fetchone()
-
-        if result is None:
-            raise AccountNotFound()
-
-        bank = result[0]
-
-        embed = discord.Embed(
-            title="Bank Balance",
-            description=f"Your bank balance is: {bank}",
-            color=discord.Color.blue()
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="networth", description="Check your total net worth (wallet + bank + assets)")
-    async def networth(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
-
-        # Fetch wallet and bank balances
-        self.economy.cur.execute("SELECT wallet, bank FROM economy WHERE user_id=?", (user_id,))
-        result = self.economy.cur.fetchone()
-
-        if not result:
-            await interaction.response.send_message("Account not found.", ephemeral=True)
-            return
-
-        wallet, bank = result
-
-        # Fetch asset values
-        self.economy.cur.execute("SELECT SUM(s.price * ua.quantity) FROM user_assets ua JOIN shop_items s ON ua.item_id = s.id WHERE ua.user_id = ?", (user_id,))
-        asset_value = self.economy.cur.fetchone()[0] or 0
-
-        net_worth = wallet + bank + asset_value
-        await interaction.response.send_message(f"{interaction.user.mention}, your total net worth is: {net_worth} :)'s.")
-
-    @app_commands.command(name="richest", description="List the top richest users in the server")
-    async def richest(self, interaction: discord.Interaction):
-        self.economy.cur.execute("SELECT user_id, wallet + bank AS total FROM economy ORDER BY total DESC LIMIT 10")
-        top_rich = self.economy.cur.fetchall()
-
-        if not top_rich:
-            await interaction.response.send_message("No users found.")
-            return
-
-        embed = discord.Embed(title="Top Richest Users", color=discord.Color.gold())
-        for index, (user_id, total) in enumerate(top_rich, start=1):
-            user = await self.bot.fetch_user(user_id)
-            embed.add_field(name=f"{index}. {user}", value=f"Total: {total} :)'s", inline=False)
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="poorest", description="List the top poorest users in the server")
-    async def poorest(self, interaction: discord.Interaction):
-        self.economy.cur.execute("SELECT user_id, wallet + bank AS total FROM economy ORDER BY total ASC LIMIT 10")
-        top_poor = self.economy.cur.fetchall()
-
-        if not top_poor:
-            await interaction.response.send_message("No users found.")
-            return
-
-        embed = discord.Embed(title="Top Poorest Users", color=discord.Color.red())
-        for index, (user_id, total) in enumerate(top_poor, start=1):
-            user = await self.bot.fetch_user(user_id)
-            embed.add_field(name=f"{index}. {user}", value=f"Total: {total} :)'s", inline=False)
-        await interaction.response.send_message(embed=embed)
-
-    """
-    Transactions
-    """
-
-    @app_commands.command(name="deposit", description="Deposits money into your bank")
-    async def deposit(self, interaction: discord.Interaction, amount: int):
-        user_id = interaction.user.id
-
-        if not await self.check_account(user_id):
-            raise AccountNotFound()
-
-        self.economy.cur.execute("SELECT wallet FROM economy WHERE user_id=?", (user_id,))
-        wallet_balance = self.economy.cur.fetchone()
-
-        if wallet_balance is None:
-            raise AccountNotFound()  # Handle case where account exists but no wallet balance found
-
-        wallet_balance = wallet_balance[0]
-
-        if wallet_balance >= amount > 0:
-            self.economy.cur.execute(
-                "UPDATE economy SET wallet = wallet - ?, bank = bank + ? WHERE user_id = ?",
-                (amount, amount, user_id)
-            )
-            self.economy.db.commit()
-            await interaction.response.send_message(f"Deposited {amount} into your bank.")
-        else:
-            raise InsufficientFunds()
-
-    @app_commands.command(name="withdraw", description="Withdraw money from your bank")
-    async def withdraw(self, interaction: discord.Interaction, amount: int):
-        user_id = interaction.user.id
-
-        if not await self.check_account(user_id):
-            raise AccountNotFound()
-
-        self.economy.cur.execute("SELECT bank FROM economy WHERE user_id=?", (user_id,))
-        bank_balance = self.economy.cur.fetchone()
-
-        if bank_balance is None:
-            raise AccountNotFound()  # Handle case where account exists but no bank balance found
-
-        bank_balance = bank_balance[0]
-
-        if bank_balance >= amount > 0:
-            self.economy.cur.execute(
-                "UPDATE economy SET wallet = wallet + ?, bank = bank - ? WHERE user_id = ?",
-                (amount, amount, user_id)
-            )
-            self.economy.db.commit()
-            await interaction.response.send_message(f"Withdrew {amount} from your bank.")
-        else:
-            raise InsufficientFunds()
-        
-    @app_commands.command(name="transfer", description="Transfer money to another user")
-    async def transfer(self, interaction: discord.Interaction, user: discord.Member, amount: int):
-        user_id = interaction.user.id
-        target_user_id = user.id
-
-        if not await self.check_account(user_id, interaction):
-            return
-
-        self.economy.cur.execute("SELECT wallet FROM economy WHERE user_id=?", (user_id,))
-        result = self.economy.cur.fetchone()
-
-        if result is None:
-            raise AccountNotFound()  # Handle case where account does not exist
-
-        wallet_balance = result[0]
-
-        if wallet_balance >= amount > 0:
-            if await self.check_account(target_user_id):  # Check if the target user has an account
-                self.economy.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, user_id))
-                self.economy.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, target_user_id))
-                self.economy.db.commit()
-                await interaction.response.send_message(f"Transferred {amount} :)'s to {user.mention}.")
-            else:
-                raise AccountNotFound(f"Target user {user.mention} does not have an account.")
-        else:
-            raise InsufficientFunds()
-        
-    @app_commands.command(name="gift", description="Gift money to another user")
-    async def gift(self, interaction: discord.Interaction, user: discord.Member, amount: int):
-        user_id = interaction.user.id
-        target_user_id = user.id
-
-        if not await self.check_account(user_id, interaction):
-            return
-
-        self.economy.cur.execute("SELECT wallet FROM economy WHERE user_id=?", (user_id,))
-        result = self.economy.cur.fetchone()
-
-        if result is None:
-            raise AccountNotFound()  # Handle case where the account does not exist
-
-        wallet_balance = result[0]
-
-        if wallet_balance >= amount > 0:
-            if await self.check_account(target_user_id):  # Check if the target user has an account
-                self.economy.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, user_id))
-                self.economy.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, target_user_id))
-                self.economy.db.commit()
-                await interaction.response.send_message(f"Gave {amount} :)'s to {user.mention} as a gift.")
-            else:
-                raise AccountNotFound(f"Target user {user.mention} does not have an account.")
-        else:
-            raise InsufficientFunds()
-
-    @app_commands.command(name="giveaway", description="Start a giveaway for a specified amount")
-    async def giveaway(self, interaction: discord.Interaction, amount: int):
-        if amount <= 0:
-            await interaction.response.send_message("The giveaway amount must be greater than zero.")
-            return
-
-        embed = discord.Embed(
-            title="Giveaway!",
-            description=f"React with 🎉 to enter for a chance to win {amount} :)'s!",
-            color=discord.Color.green()
-        )
-
-        message = await interaction.response.send_message(embed=embed)
-        await message.add_reaction("🎉")
-
-        def check(reaction, user):
-            return reaction.emoji == "🎉" and not user.bot
-
-        try:
-            reaction, user = await self.bot.wait_for("reaction_add", timeout=60.0, check=check)
-
-            # Winner selection logic
-            if await self.check_account(user.id):  # Check if the winner has an account
-                self.economy.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, user.id))
-                self.economy.db.commit()
-                await interaction.channel.send(f"Congratulations {user.mention}! You won {amount} :)'s!")
-            else:
-                await interaction.channel.send(f"Winner {user.mention} does not have an economy account, so no prize will be given.")
-        except asyncio.TimeoutError:
-            await interaction.channel.send("Giveaway ended! No winner.")
-
-    @app_commands.command(name="loan", description="Request a loan from another user")
-    async def loan(self, interaction: discord.Interaction, user: discord.Member, amount: int):
-        debtor_id = interaction.user.id
-        lender_id = user.id
-
-        if not await self.check_account(debtor_id, interaction):
-            return
-
-        self.economy.cur.execute("SELECT wallet FROM economy WHERE user_id=?", (debtor_id,))
-        debtor_wallet = self.economy.cur.fetchone()
-
-        if debtor_wallet and debtor_wallet[0] < amount:
-            raise InsufficientFunds()
-
-        # Insert loan into active_loans table
-        self.economy.cur.execute("""
-            INSERT INTO active_loans (debtor_id, lender_id, amount, status)
-            VALUES (?, ?, ?, 'pending')
-        """, (debtor_id, lender_id, amount))
-        
-        self.economy.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, debtor_id))
-        self.economy.db.commit()
-
-        await interaction.response.send_message(f"You have requested a loan of {amount} :)'s from {user.mention}.")
-
-
-    @app_commands.command(name="repay", description="Repay a loan to another user")
-    async def repay(self, interaction: discord.Interaction, user: discord.Member, amount: int):
-        debtor_id = interaction.user.id
-        lender_id = user.id
-
-        if not await self.check_account(debtor_id, interaction):
-            return
-
-        # Check if the user has an active loan
-        self.economy.cur.execute("SELECT amount FROM active_loans WHERE debtor_id = ? AND lender_id = ? AND status = 'pending'", (debtor_id, lender_id))
-        loan = self.economy.cur.fetchone()
-
-        if loan is None:
-            await interaction.response.send_message("You do not have an active loan from this user.")
-            return
-
-        # Check if the amount to repay is valid
-        self.economy.cur.execute("SELECT wallet FROM economy WHERE user_id=?", (debtor_id,))
-        result = self.economy.cur.fetchone()
-
-        if result:
-            wallet_balance = result[0]
-
-            if wallet_balance < amount or amount <= 0:
-                raise InsufficientFunds()
-
-            # Deduct the amount from the debtor and add it to the lender
-            self.economy.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, debtor_id))
-            self.economy.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, lender_id))
-            
-            # Check if the repayment clears the loan
-            remaining_loan = loan[0] - amount
-            if remaining_loan <= 0:
-                # Mark loan as repaid if fully repaid
-                self.economy.cur.execute("UPDATE active_loans SET status = 'repaid' WHERE debtor_id = ? AND lender_id = ?", (debtor_id, lender_id))
-            else:
-                # Update the loan amount remaining
-                self.economy.cur.execute("UPDATE active_loans SET amount = ? WHERE debtor_id = ? AND lender_id = ?", (remaining_loan, debtor_id, lender_id))
-
-            self.economy.db.commit()
-            await interaction.response.send_message(f"Repayed {amount} :)'s to {user.mention}.")
-
     @app_commands.command(name="shop", description="Browse the shop items")
-    async def shop(self, interaction: discord.Interaction):
-        await self.shop.show_shop(interaction)
+    async def shop(self, interaction: Interaction):
+        await self.show_shop(interaction)
 
-    @commands.command(name="buy", description="Buy an item from the shop")
-    async def buy(self, interaction: discord.Interaction, item_name: str, quantity: int):
+    @app_commands.command(name="buy", description="Buy an item from the shop")
+    async def buy(self, interaction: Interaction, item_name: str, quantity: int):
         user_id = interaction.user.id
+        account = self.check_account(user_id)
 
-        # Fetch item from shop
-        items = self.shop.shop_items()  # Assuming `self.shop` is the instance of Shop class
+        if not account:
+            await interaction.response.send_message("You don't have an active account. Please create one using the 'create_account' command.", ephemeral=True)
+            return
+        
+        items = self.shop_items()
         item = next((i for i in items if i[0].lower() == item_name.lower()), None)
 
         if not item:
-            raise ItemNotFound()
-
-        item_name, price = item
+            await interaction.response.send_message("Invalid item name. Please check the spelling and try again.", ephemeral=True)
+            return
+        
+        _item_name, price = item
         total_cost = price * quantity
 
-        # Fetch wallet balance
-        self.economy.cur.execute("SELECT wallet FROM economy WHERE user_id=?", (user_id,))
-        wallet_balance = self.economy.cur.fetchone()[0]
+        self.db.cur.execute("SELECT wallet FROM economy WHERE user_id = ?", (user_id,))
+        wallet_balance = self.db.cur.fetchone()[0]
 
-        if wallet_balance < total_cost:
-            raise InsufficientFunds()
+        if self.check_balance(wallet_balance, total_cost):
+            self.db.cur.execute(
+                "INSERT INTO user_assets (user_id, item_id, quantity) VALUES (? ,?, ?) ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = quantity + ?",
+                (user_id, item[0], quantity, quantity,)
+            )
+            self.db.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (total_cost, user_id,))
+            self.db.db.commit()
 
-        # Update user's assets and wallet
-        self.economy.cur.execute(
-            "INSERT INTO user_assets (user_id, item_id, quantity) VALUES (?, ?, ?) ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = quantity + ?",
-            (user_id, item[0], quantity, quantity)
-        )
-        self.economy.cur.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (total_cost, user_id))
-        self.economy.db.commit()
+            await interaction.response.send_message(f"Successfully bought {quantity}x {_item_name} for {total_cost} :)'s. Your new balance is {wallet_balance - total_cost}.", ephemeral=False)
+        else:
+            await interaction.response.send_message("Insufficient funds. Please check your wallet balance and try again.", ephemeral=True)
 
-        await interaction.response.send_message(f"Bought {quantity} {item_name}(s) for {total_cost} :)'s.")
-
-    @commands.command(name="sell", description="Sell an item from your assets")
-    async def sell(self, interaction: discord.Interaction, item_name: str, quantity: int):
+    @app_commands.command(name="sell", description="Sell an item from your assets")
+    async def sell(self, interaction: Interaction, item_name: str, quantity: int):
         user_id = interaction.user.id
+        account = self.check_account(user_id)
 
-        # Fetch item from shop
-        items = self.shop.shop_items()  # Assuming `self.shop` is the instance of Shop class
+        if not account:
+            await interaction.response.send_message("You don't have an active account. Please create one using the 'create_account' command.", ephemeral=True)
+            return
+        
+        items = self.shop_items()
         item = next((i for i in items if i[0].lower() == item_name.lower()), None)
 
         if not item:
-            raise ItemNotFound()
-
-        item_name, price = item
-
-        # Fetch user assets
-        self.economy.cur.execute("SELECT quantity FROM user_assets WHERE user_id = ? AND item_id = ?", (user_id, item_name))
-        result = self.economy.cur.fetchone()
+            await interaction.response.send_message("Invalid item name. Please check the spelling and try again.", ephemeral=True)
+            return
+        
+        _item_name, price = item
+        
+        self.db.cur.execute("SELECT quantity FROM user_assets WHERE user_id = ? AND item_id = ?", (user_id, item_name))
+        result = self.db.cur.fetchone()
 
         if not result or result[0] < quantity:
-            raise InvalidAmount("You don't have enough of that item to sell.")
+            await interaction.response.send_message("You don't have enough of that item to sell. Please check your inventory and try again.", ephemeral=True)
+            return
+        
+        self.db.cur.execute("UPDATE user_assets SET quantity = quantity - ? WHERE user_id = ? AND item_id = ?", (quantity, user_id, item_name))
+        self.db.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (quantity * price, user_id))
+        self.db.db.commit()
 
-        # Update assets and wallet
-        self.economy.cur.execute("UPDATE user_assets SET quantity = quantity - ? WHERE user_id = ? AND item_id = ?", (quantity, user_id, item_name))
-        self.economy.cur.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (quantity * price, user_id))
-        self.economy.db.commit()
-
-        await interaction.response.send_message(f"Sold {quantity} {item_name}(s).")
+        await interaction.response.send_message(f"Successfully sold {quantity}x {_item_name} for {quantity * price} :)'s. Your new balance is {self.check_balance(account['wallet'], quantity * price)}.", ephemeral=False)
 
     @app_commands.command(name="assets", description="View your assets")
-    async def assets(self, interaction: discord.Interaction):
+    async def assets(self, interaction: Interaction):
         user_id = interaction.user.id
+        account = self.check_account(user_id)
 
-        # Fetch user assets
-        self.economy.cur.execute("SELECT item_name, quantity FROM user_assets WHERE user_id = ?", (user_id,))
-        assets = self.economy.cur.fetchall()
+        if not account:
+            await interaction.response.send_message("You don't have an active account. Please create one using the 'create_account' command.", ephemeral=True)
+            return
+        
+        self.db.cur.execute("SELECT item_name, quantity FROM user_assets WHERE user_id = ?", (user_id,))
+        assets = self.db.cur.fetchall()
 
         if not assets:
-            await interaction.response.send_message("You have no assets.", ephemeral=True)
+            await interaction.response.send_message("You don't have any assets.", ephemeral=True)
             return
-
-        embed = discord.Embed(title="Your Assets", color=discord.Color.blue())
+        
+        embed = Embed(title="Your Assets", description="", color=Color.random())
         for name, quantity in assets:
             embed.add_field(name=name, value=f"Quantity: {quantity}", inline=False)
 
         await interaction.response.send_message(embed=embed)
 
+    # TODO:
+
     """
-    Error Handlers
+    Earning Money
     """
 
-    @deleteaccount.error
-    @resetaccount.error
-    @checkaccount.error
-    @wallet.error
-    @bank.error
-    @deposit.error
-    @withdraw.error
-    @networth.error
-    @richest.error
-    @poorest.error
-    @transfer.error
-    @gift.error
-    @giveaway.error
-    @loan.error
+    # /work - Work to earn a random amount of money.
+    # /job - Check your current job and salary.
+    # /apply <job> - Apply for a specific job (e.g., waiter, programmer).
+    # /startbusiness <business_name> - Start a business for passive income.
+    # /sell <item> - Sell an item for a specified amount.
+    # /hustle - Take a risk to earn more money.
+    # /gamble <amount> - Gamble money in a game of chance.
+
+    """
+    Investments
+    """
+
+    # /invest <amount> - Invest money in stocks or cryptocurrency.
+    # /portfolio - Check your investment portfolio.
+    # /dividends - Collect dividends from your investments.
+    # /sell_stock <stock> - Sell a specific stock.
+    # /market - View current market trends and prices.
+    # /buy_stock <stock> <amount> - Buy a specified amount of stock.
+    # /crypto - View current cryptocurrency prices.
+
+    """
+    Aunctions and Marketplaces
+    """
+
+    # /auction <item> <price> - Start an auction for an item.
+    # /bid <auction_id> <amount> - Place a bid on an auction.
+    # /end_auction <auction_id> - End a specified auction.
+    # /marketplace - View the marketplace for items.
+    # /list_item <item> - List an item for sale in the marketplace.
+
+    """
+    Miscellaneous
+    """
+
+    # /mine - Mine for resources to sell.
+    # /farm - Farm for produce to sell.
+    # /hunt - Hunt for animals and sell meat.
+    # /forage - Forage for items in the wild.
+    # /quests - View available quests for earning money.
+    # /complete_quest <quest_id> - Complete a specific quest for rewards.
+    # /leaderboard - View the economy leaderboard.
+    # /store - Access the virtual store for special items.
+    # /loyalty - Check your loyalty points for rewards.
+
+    """
+    Miscellaneous Actions
+    """
+
+    # /tax - View the current tax rate and your tax obligations.
+    # /settax <amount> set the tax amount for the server (done by admin)
+    # /taketax take tax from everyone in the database and add it to the users bank (done by admin)
+    # /donate <amount> - Donate money to a charity or server fund.
+    # /steal <user> - Attempt to steal money from another user.
+    # /rob <user> - Rob another user (with a chance of failure).
+    # /bounty <user> - Place a bounty on another user.
+
+    """
+    Economy Tips
+    """
+
+    # /tips - Get tips for managing your economy.
+    # /faq - Frequently asked questions about the economy system.
+    # /guide - Access a guide on how to earn money.
+
+    """
+    Error Handling
+    """
+
     @repay.error
-    @shop.error
-    @buy.error
-    @sell.error
-    @assets.error
-    async def account_error_handler(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, AccountNotFound):
+    async def repay_error(self, interaction: Interaction, error: Exception):
+        if isinstance(error, NoActiveLoan):
             await interaction.response.send_message(error.message, ephemeral=True)
         elif isinstance(error, InsufficientFunds):
             await interaction.response.send_message(error.message, ephemeral=True)
-        elif isinstance(error, InvalidAmount):
-            await interaction.response.send_message(error.message, ephemeral=True)
-        elif isinstance(error, ItemNotFound):
-            await interaction.response.send_message(error.message, ephemeral=True)
         else:
-            await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
+            await interaction.response.send_message("An error occurred while trying to repay your loan. Please try again later.", ephemeral=True)
 
     def cog_unload(self):
-        self.economy.close()
+        self.db.close()
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Economy(bot))
