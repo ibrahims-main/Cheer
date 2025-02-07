@@ -38,9 +38,3 @@ async def loadAll(client: Bot):
         if listener.endswith(".py"):
             await client.load_extension(f'cogs.listeners.{listener[:-3]}')
             print(f"Loaded: {listener[:-3]}")
-
-    # Economy
-    for economy in os.listdir("./cogs/economy"):
-        if economy.endswith(".py"):
-            await client.load_extension(f'cogs.economy.{economy[:-3]}')
-            print(f"Loaded: {economy[:-3]}")
