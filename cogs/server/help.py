@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from ezpage import PaginationView # Personally made library for paginations
+from ezpage import PaginationEmbedView # Personally made library for paginations
 
 class Help(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -78,7 +78,7 @@ class Help(commands.Cog):
         embed5.set_footer(text=f"Page 5 of {total_pages} | Requested by {interaction.user.name}")
         embeds.append(embed5)
 
-        view = PaginationView(embeds)
+        view = PaginationEmbedView(embeds)
         await interaction.response.send_message(embed=embeds[0], view=view)
 
 async def setup(bot: commands.Bot):
