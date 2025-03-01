@@ -38,3 +38,9 @@ async def loadAll(client: Bot):
         if listener.endswith(".py"):
             await client.load_extension(f'cogs.listeners.{listener[:-3]}')
             print(f"Loaded: {listener[:-3]}")
+
+    # Music
+    for listener in os.listdir("./cogs/music"):
+        if listener.endswith(".py"):
+            await client.load_extension(f'cogs.music.{listener[:-3]}')
+            print(f"Loaded: {listener[:-3]}")

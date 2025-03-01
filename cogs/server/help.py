@@ -53,7 +53,7 @@ class Help(commands.Cog):
         embed3.set_footer(text=f"Page 3 of {total_pages} | Requested by {interaction.user.name}")
         embeds.append(embed3)
 
-        # 🌍 Server Management Commands
+        # 🌍 Server Commands
         embed4 = discord.Embed(title="🌍 Server Commands", description="Server-related commands.", color=0x1abc9c)
         embed4.add_field(name="🛑 **/afk**", value="Set yourself as AFK.", inline=False)
         embed4.add_field(name="📢 **/announce**", value="Make an announcement.", inline=False)
